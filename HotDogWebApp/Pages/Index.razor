@@ -4,45 +4,56 @@
 
 <h3>Upload</h3>
 
-<InputFile OnChange="@HandleSelection"/>
+<InputFile OnChange="@HandleSelection" multiple />
+<br>
+<br>
 
-<p>@status</p>
+
+@foreach (var message in _messages)
+{
+    <p>
+        @message
+    </p>
+}
 
 @code {
-    string status;
+    private readonly List<string> _messages = new List<string>();
+
 
     private async Task HandleSelection(InputFileChangeEventArgs e)
     {
         try
         {
-            var file = e.File;
-
-        var httpClient = ClientFactory.CreateClient("HotDogApi");
-
-        var buffer = new byte[file.Size];
-        await file.OpenReadStream().ReadAsync(buffer);
-
-        var s = new MemoryStream();
-        await s.WriteAsync(buffer);
-        s.Position = 0;
-
-        var content = new MultipartFormDataContent
-        {
+            foreach (var file in e.GetMultipleFiles(20))
             {
-                new ByteArrayContent(s.GetBuffer()),
-                "\"upload\"",
-                file.Name
+                var httpClient = ClientFactory.CreateClient("HotDogApi");
+
+                var buffer = new byte[file.Size];
+                await file.OpenReadStream(long.MaxValue).ReadAsync(buffer);
+
+                var s = new MemoryStream();
+                await s.WriteAsync(buffer);
+                s.Position = 0;
+
+                var content = new MultipartFormDataContent
+                {
+                    {
+                        new ByteArrayContent(s.GetBuffer()),
+                        "\"upload\"",
+                        file.Name
+                    }
+                };
+
+                await httpClient.PostAsync("upload", content);
+
+                _messages.Add($"Finished loading {file.Size} bytes from {file.Name}");
             }
-        };
-
-        await httpClient.PostAsync("upload", content);
-
-        status = $"Finished loading {file.Size} bytes from {file.Name}";
         }
-        catch (System.Exception ex)
+        catch (Exception ex)
         {
-            status = ex.Message;
+            _messages.Add(ex.Message);
             throw;
-        }        
+        }
     }
+
 }

@@ -1,48 +1,52 @@
-using System;
-using System.IO;
-using System.Threading.Tasks;
 using Microsoft.Azure.CognitiveServices.Vision.CustomVision.Prediction;
 using Microsoft.Azure.Storage.Blob;
 using Microsoft.Azure.WebJobs;
-using Microsoft.Azure.WebJobs.Extensions.SignalRService;
 using Microsoft.Extensions.Logging;
+using System;
+using System.Collections.Generic;
+using System.Dynamic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace HotDogFunctions
 {
     public static class ProcessImage
     {
-        private const string Endpoint = "https://foodcustomvision.cognitiveservices.azure.com/";
-        private const string TrainingKey = "dcbea48f2c594c93adece1c63ff7cdaf";
-        private const string PredictionKey = "74f181dc48934a81937d185908e5c3d4";
-
         [FunctionName("ProcessImage")]
-        public static Task Run([BlobTrigger("sample-images/{name}", Connection = "AzureStorage:ConnectionString")]
-            Stream myBlob, [Blob("sample-images/{name}", FileAccess.ReadWrite,
-                Connection = "AzureStorage:ConnectionString")]
-            CloudBlockBlob blob, [SignalR(HubName = "HotDogHub")] IAsyncCollector<SignalRMessage> signalRMessages,
+        public static Task Run(
+            [BlobTrigger("sample-images/{name}", Connection = "AzureStorageConnectionString")] Stream myBlob, 
+            [Blob("sample-images/{name}", FileAccess.ReadWrite, Connection = "AzureStorageConnectionString")] CloudBlockBlob blob,
+            [CosmosDB(
+                databaseName: "hotdogsphotos",
+                collectionName: "photosclassification",
+                ConnectionStringSetting = "CosmosDBConnection")]out dynamic document,
             ILogger log)
         {
             log.LogInformation(
                 $"C# Blob trigger function Processed blob\n Name:{blob.Name} \n Size: {myBlob.Length} Bytes");
 
-            var client = AuthenticatePrediction(Endpoint, PredictionKey);
+            var projectId = Environment.GetEnvironmentVariable("CustomVisionProjectId", EnvironmentVariableTarget.Process);
+            var publishedName = Environment.GetEnvironmentVariable("CustomVisionPublishedName", EnvironmentVariableTarget.Process);
+            var endpoint = Environment.GetEnvironmentVariable("CustomVisionEndpoint", EnvironmentVariableTarget.Process);
+            var predictionKey = Environment.GetEnvironmentVariable("CustomVisionPredictionKey", EnvironmentVariableTarget.Process);
 
-            var result = client.ClassifyImage(new Guid("17d67036-31ed-4e1e-acc6-57e147af7ac0"), "HotDogsDetectionModel",
+            var client = AuthenticatePrediction(endpoint, predictionKey);            
+
+            var result = client.ClassifyImage(new Guid(projectId ?? string.Empty), publishedName,
                 myBlob);
+            
+            var dynamicObject = new ExpandoObject() as IDictionary<string, object>;
+            dynamicObject.TryAdd("ImageUrl", blob.Uri.ToString());
+            dynamicObject.TryAdd("Id", Guid.NewGuid());
 
-            var resultStr = "";
-            foreach (var c in result.Predictions)
-            {
-                log.LogInformation($"\t{c.TagName}: {c.Probability:P1}");
-
-                resultStr += $"{c.TagName}: {c.Probability:P1} \n";
+            foreach(var prediction in result.Predictions){
+                dynamicObject.TryAdd(string.Concat(prediction.TagName.Where(c => !char.IsWhiteSpace(c))), prediction.Probability);
             }
 
-            return signalRMessages.AddAsync(new SignalRMessage
-            {
-                Target = "clientMessage",
-                Arguments = new object[] {new ClientMessage {ImageUrl = blob.Uri.ToString(), Message = resultStr}}
-            });
+            document = dynamicObject;
+
+            return Task.CompletedTask;
         }
 
         private static CustomVisionPredictionClient AuthenticatePrediction(string endpoint, string predictionKey)
@@ -55,4 +59,5 @@ namespace HotDogFunctions
             return predictionApi;
         }
     }
+
 }
